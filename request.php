@@ -1,10 +1,12 @@
 <?php
 
 /**
- * heavily borrowed yii's CHttpRequest
+ * combine yii's CHttpRequest and Kohana's Request
  *
  * @author lzyy http://blog.leezhong.com
- * @version 0.1.0
+ * @dependency route
+ * @homepage https://github.com/witty/request
+ * @version 0.1.1
  */
 class Request extends Witty_Base
 {
@@ -16,9 +18,59 @@ class Request extends Witty_Base
 	protected $_url;
 	protected $_base_url;
 	protected $_cookies;
+	protected $_route;
+	protected $_uri;
+	protected $_directory;
+	protected $_controller;
+	protected $_action;
+	protected $_params;
 
-	public function __construct()
+	public static $initial;
+	public static $client_ip;
+
+	/**
+	 * @since 0.1.1
+	 */
+	protected function _after_construct($uri)
 	{
+		if (Witty::$is_cli)
+		{
+			// Get the command line options
+			$options = CLI::options('uri', 'get', 'post');
+
+			if (isset($options['uri']))
+			{
+				// Use the specified URI
+				$uri = $options['uri'];
+			}
+
+			if (isset($options['get']))
+			{
+				// Overload the global GET data
+				parse_str($options['get'], $_GET);
+			}
+
+			if (isset($options['post']))
+			{
+				// Overload the global POST data
+				parse_str($options['post'], $_POST);
+			}
+		}
+
+		if ($uri === NULL)
+		{
+			$uri = $this->url;
+		}
+
+		$base_url = $this->get_base_url();
+
+		if (strpos($uri, $base_url) === 0)
+		{
+			$uri = substr($uri, strlen($base_url));
+		}
+
+		$uri = trim(preg_replace('#/[a-z]+.php/#', '', $uri), '/');
+
 		if (get_magic_quotes_gpc())
 		{
 			if (isset($_GET))
@@ -30,6 +82,50 @@ class Request extends Witty_Base
 			if (isset($_COOKIE))
 				$_COOKIE = $this->strip_slashes($_COOKIE);
 		}
+
+		$params = Request::process_uri($uri);
+		if ($params)
+		{
+			// Store the URI
+			$this->_uri = $params['uri'];
+
+			// Store the matching route
+			$this->_route = $params['route'];
+
+			if (isset($params['directory']))
+			{
+				// Controllers are in a sub-directory
+				$this->_directory = $params['directory'];
+			}
+
+			// Store the controller
+			$this->_controller = $params['controller'];
+
+			if (isset($params['action']))
+			{
+				// Store the action
+				$this->_action = $params['action'];
+			}
+			else
+			{
+				// Use the default action
+				$this->_action = Route::$default_action;
+			}
+
+			// These are accessible as public vars and can be overloaded
+			unset($params['controller'], $params['action'], $params['directory']);
+
+			// Params cannot be changed once matched
+			$this->_params = $params;
+
+			// Put into $_GET
+			$_GET += $this->_params;
+		}
+		else
+		{
+			throw new Request_Exception('Unable to find a route to match the URI: {uri}',
+				array('{uri}' => $uri));
+		}
 	}
 
 	public function get_param($name,$default = NULL)
@@ -40,7 +136,10 @@ class Request extends Witty_Base
 	public function get_base_url($absolute=false)
 	{
 		if($this->_base_url===null)
-			$this->_base_url=rtrim(dirname($this->get_script_url()),'\\/');
+		{
+			//$this->_base_url=rtrim(dirname($this->get_script_url()),'\\/');
+			$this->_base_url=rtrim($this->get_script_url(),'\\/');
+		}
 		return $absolute ? $this->get_host_info().$this->_base_url : $this->_base_url;
 	}
 
@@ -158,6 +257,147 @@ class Request extends Witty_Base
 		return is_array($data) ? array_map(array($this,'strip_slashes'), $data) : stripslashes($data);
 	}
 
+	public function get_controller()
+	{
+		return $this->_controller;
+	}
+
+	public function get_action()
+	{
+		return $this->_action;
+	}
+
+	public function get_directory()
+	{
+		return $this->_directory;
+	}
+
+	public function param($param = NULL)
+	{
+		if (is_null($param))
+			return $this->_params;
+		return $this->_params[$param];
+	}
+
+	/**
+	 * Processes the request, executing the controller action that handles this
+	 * request, determined by the [Route].
+	 *
+	 * 1. Before the controller action is called, the [Controller::before] method
+	 * will be called.
+	 * 2. Next the controller action will be called.
+	 * 3. After the controller action is called, the [Controller::after] method
+	 * will be called.
+	 *
+	 * By default, the output from the controller is captured and returned, and
+	 * no headers are sent.
+	 *
+	 *     $request->execute();
+	 *
+	 * @param   Request $request
+	 * @return  Response
+	 * @throws  Kohana_Exception
+	 * @uses    [Kohana::$profiling]
+	 * @uses    [Profiler]
+	 * @deprecated passing $params to controller methods deprecated since version 3.1
+	 *             will be removed in 3.2
+	 */
+	public function execute()
+	{
+		// Create the class prefix
+		$prefix = 'controller_';
+
+		// Directory
+		$directory = $this->_directory;
+
+		// Controller
+		$controller = $this->_controller;
+
+		if ($directory)
+		{
+			// Add the directory name to the class prefix
+			$prefix .= str_replace(array('\\', '/'), '_', trim($directory, '/')).'_';
+		}
+
+		if (Profiler::$enabled)
+		{
+			// Set the benchmark name
+			$benchmark = '"'.$this->url.'"';
+
+			// Start benchmarking
+			$benchmark = Profiler::start('Requests', $benchmark);
+		}
+
+		try
+		{
+			if (!class_exists($prefix.$controller))
+			{
+				throw new Request_Exception('The requested URL {uri} was not found on this server.',
+													array('{uri}' => $this->param('uri')));
+			}
+
+			// Load the controller using reflection
+			$class = new ReflectionClass($prefix.$controller);
+
+			if ($class->isAbstract())
+			{
+				throw new Request_Exception('Cannot create instances of abstract {controller}',
+					array('{controller}' => $prefix.$controller));
+			}
+
+			// Create a new instance of the controller
+			$controller = $class->newInstance();
+
+			if ($class->hasMethod('before'))
+				$class->getMethod('before')->invoke($controller);
+
+			// Determine the action to use
+			$action = $this->_action;
+
+			$params = $this->param();
+
+			// If the action doesn't exist, it's a 404
+			if (!$class->hasMethod('action_'.$action))
+			{
+				throw new Request_Exception('The requested URL {uri} was not found on this server.',
+													array('{uri}' => $request->_params['uri']));
+			}
+
+			$method = $class->getMethod('action_'.$action);
+
+			/**
+			 * Execute the main action with the parameters
+			 *
+			 * @deprecated $params passing is deprecated since version 3.1
+			 *             will be removed in 3.2.
+			 */
+			$method->invoke($controller);
+
+			// Execute the "after action" method
+			if ($class->hasMethod('before'))
+				$class->getMethod('after')->invoke($controller);
+
+		}
+		catch (Exception $e)
+		{
+			if (isset($benchmark))
+			{
+				// Delete the benchmark, it is invalid
+				Profiler::delete($benchmark);
+			}
+
+			// Re-throw the exception
+			throw $e;
+		}
+
+		if (isset($benchmark))
+		{
+			// Stop the benchmark
+			Profiler::stop($benchmark);
+		}
+
+	}
+
 	public static function is_ajax()
 	{
 		return isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH']==='XMLHttpRequest';
@@ -196,5 +436,33 @@ class Request extends Witty_Base
 		header('Location: '.$url, true, $status);
 		exit;
 	}
+
+	public static function process_uri($uri)
+	{
+		$routes = Route::all();
+		$params = NULL;
+
+		foreach ($routes as $name => $route)
+		{
+			// We found something suitable
+			if ($params = $route->matches($uri))
+			{
+				if ( ! isset($params['uri']))
+				{
+					$params['uri'] = $uri;
+				}
+
+				if ( ! isset($params['route']))
+				{
+					$params['route'] = $route;
+				}
+
+				break;
+			}
+		}
+
+		return $params;
+	}
+
 	
 }

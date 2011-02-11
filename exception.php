@@ -1,3 +1,3 @@
 <?php
 
-class Request_Exception extends Witty_Core_Exception {}
+class Request_Exception extends Witty_Exception {}
