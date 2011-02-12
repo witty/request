@@ -6,7 +6,7 @@
  * @author lzyy http://blog.leezhong.com
  * @dependency route
  * @homepage https://github.com/witty/request
- * @version 0.1.1
+ * @version 0.1.2
  */
 class Request extends Witty_Base
 {
@@ -120,6 +120,9 @@ class Request extends Witty_Base
 
 			// Put into $_GET
 			$_GET += $this->_params;
+			// add in 0.1.2
+			unset($_GET['route']);
+			unset($_GET['uri']);
 		}
 		else
 		{
