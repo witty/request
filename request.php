@@ -6,7 +6,7 @@
  * @author lzyy http://blog.leezhong.com
  * @dependency route
  * @homepage https://github.com/witty/request
- * @version 0.1.2
+ * @version 0.1.3
  */
 class Request extends Witty_Base
 {
@@ -127,7 +127,7 @@ class Request extends Witty_Base
 		else
 		{
 			throw new Request_Exception('Unable to find a route to match the URI: {uri}',
-				array('{uri}' => $uri));
+				array('{uri}' => $uri), 404);
 		}
 	}
 
@@ -336,7 +336,7 @@ class Request extends Witty_Base
 			if (!class_exists($prefix.$controller))
 			{
 				throw new Request_Exception('The requested URL {uri} was not found on this server.',
-													array('{uri}' => $this->param('uri')));
+													array('{uri}' => $this->param('uri')), 404);
 			}
 
 			// Load the controller using reflection
@@ -345,7 +345,7 @@ class Request extends Witty_Base
 			if ($class->isAbstract())
 			{
 				throw new Request_Exception('Cannot create instances of abstract {controller}',
-					array('{controller}' => $prefix.$controller));
+					array('{controller}' => $prefix.$controller), 500);
 			}
 
 			// Create a new instance of the controller
@@ -363,7 +363,7 @@ class Request extends Witty_Base
 			if (!$class->hasMethod('action_'.$action))
 			{
 				throw new Request_Exception('The requested URL {uri} was not found on this server.',
-													array('{uri}' => $request->_params['uri']));
+													array('{uri}' => $request->_params['uri']), 404);
 			}
 
 			$method = $class->getMethod('action_'.$action);
